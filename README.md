@@ -2,7 +2,7 @@
 
 This project is a probabilistic simulation framework for predicting football match outcomes and estimating World Cup 2026 winning probabilities using a Poisson-based generative model.
 
-⚠️ **Work in progress — experimental research project**
+⚠️ **Work in progress — project for fun**
 
 ---
 
