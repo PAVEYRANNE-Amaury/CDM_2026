@@ -19,7 +19,7 @@ print(df.head())
 
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-df = df[df["date"].dt.year >= 2022].copy()
+df = df[df["date"].dt.year >= 2020].copy()
 
 # enlever lignes invalides
 df = df.dropna(subset=["home_team", "away_team", "home_score", "away_score"])
@@ -42,7 +42,7 @@ df["result"] = df.apply(result, axis=1)
 # 4. SAVE CLEAN DATASET
 # =========================================================
 
-df.to_csv(DATA_DIR / "international_matches_post2022.csv", index=False)
+df.to_csv(DATA_DIR / "international_matches_post2020.csv", index=False)
 
 print("Dataset shape:", df.shape)
 print(df.head())
