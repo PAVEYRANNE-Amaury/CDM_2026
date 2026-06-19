@@ -6,19 +6,14 @@ import argparse
 # =========================================================
 # LOAD DATA
 # =========================================================
-matches = pd.read_csv("data/raw/international_matches_post2020.csv")
 ratings = pd.read_csv("results/model_ratings_poisson_timeweighted.csv")
 
-matches["date"] = pd.to_datetime(matches["date"])
-
-# =========================================================
-# MODEL
-# =========================================================
 teams = ratings["team"].values
 team_idx = {t: i for i, t in enumerate(teams)}
 
 attack = ratings["attack"].values
 defense = ratings["defense"].values
+
 
 # =========================================================
 # GROUPS
@@ -38,106 +33,112 @@ groups = {
     "L": ["England", "Croatia", "Ghana", "Panama"],
 }
 
-# =========================================================
-# MATCH SIMULATION
-# =========================================================
-def sim_match(home, away):
-    h = team_idx[home]
-    a = team_idx[away]
-
-    lam_home = np.exp(attack[h] + defense[a])
-    lam_away = np.exp(attack[a] + defense[h])
-
-    return np.random.poisson(lam_home), np.random.poisson(lam_away)
-
-
-def sim_match_knockout(team1, team2):
-    h = team_idx[team1]
-    a = team_idx[team2]
-
-    lam1 = np.exp(attack[h] + defense[a])
-    lam2 = np.exp(attack[a] + defense[h])
-
-    g1 = np.random.poisson(lam1)
-    g2 = np.random.poisson(lam2)
-
-    if g1 == g2:
-        g1 += np.random.binomial(1, 0.5)
-        g2 += np.random.binomial(1, 0.5)
-
-    return team1 if g1 > g2 else team2
 
 # =========================================================
-# GROUP STANDINGS
+# FAST POISSON SIMULATION (VECTOR FRIENDLY)
 # =========================================================
-def init_table():
-    return pd.DataFrame(columns=["pts", "gf", "ga", "gd"]).astype(float)
+def sim_match_fast(h_idx, a_idx):
+    lam_h = np.exp(attack[h_idx] + defense[a_idx])
+    lam_a = np.exp(attack[a_idx] + defense[h_idx])
 
+    return (
+        np.random.poisson(lam_h, size=lam_h.shape if hasattr(lam_h, "shape") else ()),
+        np.random.poisson(lam_a, size=lam_a.shape if hasattr(lam_a, "shape") else ())
+    )
 
-def update_table(table, team, gf, ga):
-    if team not in table.index:
-        table.loc[team] = [0, 0, 0, 0]
-
-    table.loc[team, "gf"] += gf
-    table.loc[team, "ga"] += ga
-    table.loc[team, "gd"] = table.loc[team, "gf"] - table.loc[team, "ga"]
-
-    if gf > ga:
-        table.loc[team, "pts"] += 3
-    elif gf == ga:
-        table.loc[team, "pts"] += 1
-
-    return table
 
 # =========================================================
-# GROUPS
+# GROUP SIMULATION (OPTIMIZED)
+# =========================================================
+def simulate_group(group_teams):
+    n = len(group_teams)
+
+    idx = [team_idx[t] for t in group_teams]
+
+    pts = np.zeros(n)
+    gf = np.zeros(n)
+    ga = np.zeros(n)
+
+    # 6 matches fixed
+    for i in range(n):
+        for j in range(i + 1, n):
+
+            h, a = idx[i], idx[j]
+
+            g1 = np.random.poisson(np.exp(attack[h] + defense[a]))
+            g2 = np.random.poisson(np.exp(attack[a] + defense[h]))
+
+            gf[i] += g1
+            ga[i] += g2
+
+            gf[j] += g2
+            ga[j] += g1
+
+            if g1 > g2:
+                pts[i] += 3
+            elif g2 > g1:
+                pts[j] += 3
+            else:
+                pts[i] += 1
+                pts[j] += 1
+
+    gd = gf - ga
+
+    order = np.lexsort((-gf, -gd, -pts))  # FIFA tie-break approx
+
+    return (
+        np.array(group_teams)[order],
+        pts[order],
+        gf[order],
+        ga[order],
+        gd[order],
+    )
+
+
+# =========================================================
+# FULL GROUP PHASE
 # =========================================================
 def build_groups():
-    group_tables = {}
+    first, second, third = {}, {}, {}
+    third_stats = []
 
     for g, teams_g in groups.items():
-        table = init_table()
 
-        for i in range(len(teams_g)):
-            for j in range(i + 1, len(teams_g)):
-                h, a = teams_g[i], teams_g[j]
+        ranked, pts, gf, ga, gd = simulate_group(teams_g)
 
-                gf, ga = sim_match(h, a)
+        first[g] = ranked[0]
+        second[g] = ranked[1]
+        third[g] = ranked[2]
 
-                table = update_table(table, h, gf, ga)
-                table = update_table(table, a, ga, gf)
-
-        group_tables[g] = table.sort_values(["pts", "gd", "gf"], ascending=False)
-
-    return group_tables
-
-# =========================================================
-# RO32 BUILDER
-# =========================================================
-def get_ro32(group_tables):
-
-    first, second, third = {}, {}, {}
-
-    for g, t in group_tables.items():
-        first[g] = t.index[0]
-        second[g] = t.index[1]
-        third[g] = t.index[2]
-
-    third_list = pd.DataFrame([
-        {
-            "team": third[g],
+        third_stats.append({
+            "team": ranked[2],
             "group": g,
-            "pts": group_tables[g].loc[third[g], "pts"],
-            "gd": group_tables[g].loc[third[g], "gd"],
-            "gf": group_tables[g].loc[third[g], "gf"]
-        }
-        for g in groups
-    ])
+            "pts": pts[2],
+            "gf": gf[2],
+            "gd": gd[2]
+        })
 
-    best_thirds = third_list.sort_values(
+    return first, second, third_stats
+
+
+# =========================================================
+# BEST THIRD (GLOBAL UNIQUE)
+# =========================================================
+def select_best_thirds(third_stats):
+    df = pd.DataFrame(third_stats)
+
+    best = df.sort_values(
         ["pts", "gd", "gf"],
         ascending=False
     ).head(8)["team"].tolist()
+
+    return best
+
+
+# =========================================================
+# RO32 BUILDER (IDENTIQUE LOGIQUE MAIS SAFE)
+# =========================================================
+def get_ro32(first, second, best_thirds):
 
     pool = best_thirds.copy()
 
@@ -168,18 +169,31 @@ def get_ro32(group_tables):
 
     return ro32
 
+
 # =========================================================
-# TOURNAMENT
+# KNOCKOUT SIM (SIMPLE BUT FAST)
 # =========================================================
+def sim_knockout(a, b):
+    ia, ib = team_idx[a], team_idx[b]
+
+    g1 = np.random.poisson(np.exp(attack[ia] + defense[ib]))
+    g2 = np.random.poisson(np.exp(attack[ib] + defense[ia]))
+
+    if g1 == g2:
+        g1 += np.random.binomial(1, 0.5)
+
+    return a if g1 > g2 else b
+
+
 def simulate_tournament(ro32):
 
-    r16 = [sim_match_knockout(a, b) for a, b in ro32]
-    qf = [sim_match_knockout(r16[i], r16[i+1]) for i in range(0, 16, 2)]
-    sf = [sim_match_knockout(qf[i], qf[i+1]) for i in range(0, 8, 2)]
+    r16 = [sim_knockout(a, b) for a, b in ro32]
+    qf = [sim_knockout(r16[i], r16[i+1]) for i in range(0, 16, 2)]
+    sf = [sim_knockout(qf[i], qf[i+1]) for i in range(0, 8, 2)]
+    final = sim_knockout(sf[0], sf[1])
 
-    final_winner = sim_match_knockout(sf[0], sf[1])
+    return final
 
-    return final_winner
 
 # =========================================================
 # MONTE CARLO
@@ -190,19 +204,18 @@ def monte_carlo(n_sim=1000):
 
     for _ in tqdm(range(n_sim)):
 
-        group_tables = build_groups()
-        ro32 = get_ro32(group_tables)
+        first, second, third_stats = build_groups()
+        best_thirds = select_best_thirds(third_stats)
+        ro32 = get_ro32(first, second, best_thirds)
         winner = simulate_tournament(ro32)
 
         wins[winner] = wins.get(winner, 0) + 1
 
-    return (
-        pd.DataFrame([
-            {"team": t, "win_prob": w / n_sim}
-            for t, w in wins.items()
-        ])
-        .sort_values("win_prob", ascending=False)
-    )
+    return pd.DataFrame([
+        {"team": t, "win_prob": v / n_sim}
+        for t, v in wins.items()
+    ]).sort_values("win_prob", ascending=False)
+
 
 # =========================================================
 # RUN
@@ -215,7 +228,7 @@ if __name__ == "__main__":
 
     print(f"Running Monte Carlo with {args.n_sim} simulations...")
 
-    probs = monte_carlo(n_sim=args.n_sim)
+    results = monte_carlo(n_sim=args.n_sim)
 
     print("\n===== WIN PROBABILITIES =====")
-    print(probs.head(20))
+    print(results.head(20))
