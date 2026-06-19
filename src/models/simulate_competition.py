@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import argparse
 
 # =========================================================
 # LOAD DATA
@@ -49,6 +50,7 @@ def sim_match(home, away):
 
     return np.random.poisson(lam_home), np.random.poisson(lam_away)
 
+
 def sim_match_knockout(team1, team2):
     h = team_idx[team1]
     a = team_idx[team2]
@@ -71,6 +73,7 @@ def sim_match_knockout(team1, team2):
 def init_table():
     return pd.DataFrame(columns=["pts", "gf", "ga", "gd"]).astype(float)
 
+
 def update_table(table, team, gf, ga):
     if team not in table.index:
         table.loc[team] = [0, 0, 0, 0]
@@ -87,14 +90,13 @@ def update_table(table, team, gf, ga):
     return table
 
 # =========================================================
-# BUILD GROUPS
+# GROUPS
 # =========================================================
 def build_groups():
     group_tables = {}
 
     for g, teams_g in groups.items():
         table = init_table()
-        played = set()
 
         for i in range(len(teams_g)):
             for j in range(i + 1, len(teams_g)):
@@ -110,7 +112,7 @@ def build_groups():
     return group_tables
 
 # =========================================================
-# QUALIFIERS + 3RD PLACES
+# RO32 BUILDER
 # =========================================================
 def get_ro32(group_tables):
 
@@ -137,10 +139,10 @@ def get_ro32(group_tables):
         ascending=False
     ).head(8)["team"].tolist()
 
-    third_pool = best_thirds.copy()
+    pool = best_thirds.copy()
 
     def pick():
-        return third_pool.pop(0)
+        return pool.pop(0)
 
     ro32 = []
 
@@ -167,48 +169,53 @@ def get_ro32(group_tables):
     return ro32
 
 # =========================================================
-# TOURNAMENT SIMULATION
+# TOURNAMENT
 # =========================================================
 def simulate_tournament(ro32):
 
     r16 = [sim_match_knockout(a, b) for a, b in ro32]
-
     qf = [sim_match_knockout(r16[i], r16[i+1]) for i in range(0, 16, 2)]
-
     sf = [sim_match_knockout(qf[i], qf[i+1]) for i in range(0, 8, 2)]
 
-    final = [sim_match_knockout(sf[0], sf[1])]
+    final_winner = sim_match_knockout(sf[0], sf[1])
 
-    return sim_match_knockout(final[0], final[0]) if len(final) > 1 else final[0]
+    return final_winner
 
 # =========================================================
 # MONTE CARLO
 # =========================================================
-def monte_carlo(n_sim=200):
+def monte_carlo(n_sim=1000):
 
     wins = {}
 
     for _ in tqdm(range(n_sim)):
 
-        groups = build_groups()
-        ro32 = get_ro32(groups)
+        group_tables = build_groups()
+        ro32 = get_ro32(group_tables)
         winner = simulate_tournament(ro32)
 
         wins[winner] = wins.get(winner, 0) + 1
 
-    return pd.DataFrame([
-        {"team": t, "win_prob": w / n_sim}
-        for t, w in wins.items()
-    ]).sort_values("win_prob", ascending=False)
+    return (
+        pd.DataFrame([
+            {"team": t, "win_prob": w / n_sim}
+            for t, w in wins.items()
+        ])
+        .sort_values("win_prob", ascending=False)
+    )
 
 # =========================================================
 # RUN
 # =========================================================
 if __name__ == "__main__":
 
-    print("Running Monte Carlo simulation...")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_sim", type=int, default=10000)
+    args = parser.parse_args()
 
-    probs = monte_carlo(n_sim=200)
+    print(f"Running Monte Carlo with {args.n_sim} simulations...")
+
+    probs = monte_carlo(n_sim=args.n_sim)
 
     print("\n===== WIN PROBABILITIES =====")
     print(probs.head(20))
