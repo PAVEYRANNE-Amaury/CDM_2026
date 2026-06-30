@@ -100,8 +100,8 @@ if __name__ == "__main__":
 
     analyzer = MatchupAnalyzer(ratings)
 
-    t1 = "Switzerland"
-    t2 = "Canada"
+    t1 = "Germany"
+    t2 = "Ecuador"
 
     print(f"\n=== MATCH ANALYSIS: {t1} vs {t2} ===\n")
 

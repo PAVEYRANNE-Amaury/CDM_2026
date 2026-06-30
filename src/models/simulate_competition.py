@@ -110,32 +110,96 @@ def get_wc_matches(start_date=None, end_date=None):
 # RO32
 # =========================================================
 def get_ro32(first, second, best_thirds):
-    pool = best_thirds.copy()
+    # Table des correspondances officielles de l'Annexe C de la FIFA (Coupe du Monde 2026)
+    allowed_opponents = {
+        "E": ["A", "B", "C", "D", "F"],
+        "I": ["C", "D", "F", "G", "H"],
+        "D": ["B", "E", "F", "I", "J"],
+        "G": ["A", "E", "H", "I", "J"],
+        "A": ["C", "E", "F", "H", "I"],
+        "L": ["E", "H", "I", "J", "K"],
+        "B": ["E", "F", "G", "I", "J"],
+        "K": ["D", "E", "I", "J", "L"]
+    }
+    
+    winners_needing_third = ["E", "I", "D", "G", "A", "L", "B", "K"]
+    
+    # -----------------------------------------------------
+    # OPTIMISATION : VERROUILLAGE DES MATCHS RÉELS
+    # -----------------------------------------------------
+    # On récupère l'état réel du knockout pour calquer la structure sur la réalité
+    wc_matches = get_wc_matches("2026-06-01", "2026-07-31")
+    _, ko_results = build_real_state(wc_matches)
+    
+    matching = {}
+    assigned_thirds = set()
+    
+    # Étape A : Si un premier a déjà joué contre un des meilleurs 3èmes en vrai, on force l'affiche
+    for w in winners_needing_third:
+        winner_team = first[w]
+        for t in best_thirds:
+            if t in assigned_thirds:
+                continue
+            key = tuple(sorted((winner_team, t)))
+            if key in ko_results:
+                matching[w] = t
+                assigned_thirds.add(t)
+                break
 
-    def pick():
-        return pool.pop(0)
+    # Étape B : Pour les matchs non encore joués, on laisse le backtracking s'occuper du reste
+    remaining_winners = [w for w in winners_needing_third if w not in matching]
+    remaining_thirds = [t for t in best_thirds if t not in assigned_thirds]
+    
+    def find_matching_rest(winners, thirds, current_matching):
+        if not winners:
+            return current_matching
+        w = winners[0]
+        for t in thirds:
+            if t not in current_matching.values():
+                g = team_to_group[t] 
+                if g in allowed_opponents[w]:
+                    current_matching[w] = t
+                    res = find_matching_rest(winners[1:], thirds, current_matching.copy())
+                    if res:
+                        return res
+        return None
+
+    if remaining_winners:
+        rest_matching = find_matching_rest(remaining_winners, remaining_thirds, matching.copy())
+        if rest_matching:
+            matching = rest_matching
+
+    # Fallback ultime de sécurité
+    if len(matching) < len(winners_needing_third):
+        pool = best_thirds.copy()
+        for w in winners_needing_third:
+            if w not in matching:
+                matching[w] = pool.pop(0)
 
     ro32 = []
 
     def add(a, b):
         ro32.append((a, b))
 
-    add(first["E"], pick())
-    add(first["I"], pick())
+    # Distribution finale (Inchangée, respecte tes variables)
+    add(first["E"], matching["E"])
+    add(first["I"], matching["I"])
     add(second["A"], second["B"])
     add(first["F"], second["C"])  
     add(second["K"], second["L"])
     add(first["H"], second["J"])
-    add(first["D"], pick())
-    add(first["G"], pick())
+    add(first["D"], matching["D"])
+    add(first["G"], matching["G"])
     add(first["C"], second["F"])
+    second_e = second.get("E", None)
+    second_i = second.get("I", None)
     add(second["E"], second["I"])
-    add(first["A"], pick())
-    add(first["L"], pick())
+    add(first["A"], matching["A"])
+    add(first["L"], matching["L"])
     add(first["J"], second["H"])
     add(second["D"], second["G"])
-    add(first["B"], pick())
-    add(first["K"], pick())
+    add(first["B"], matching["B"])
+    add(first["K"], matching["K"])
 
     return ro32
 
@@ -284,9 +348,23 @@ def sim_knockout(t1, t2, ko_results):
         elif g2 > g1:
             return a
         else:
-            if match_data["winner"] is not None:
+            # 1. Si le vainqueur a déjà été saisi (ou est déjà présent dans le CSV)
+            if match_data["winner"] is not None and pd.notna(match_data["winner"]):
                 return match_data["winner"]
-            return t1 if np.random.rand() < 0.5 else t2
+            
+            # 2. Sinon, on demande à l'utilisateur et on boucle tant que la saisie n'est pas valide
+            print(f"\n➔ Match réel détecté : {h} {g1} - {g2} {a} (Match nul dans le temps réglementaire).")
+            winner = ""
+            while winner not in [h, a]:
+                winner = input(f"  Qui a gagné aux tirs au but ? Écris exactement '{h}' ou '{a}' : ").strip()
+                if winner not in [h, a]:
+                    print(f"  [Erreur] Nom d'équipe invalide. Recommence.")
+
+            # 3. On enregistre le choix directement dans l'état pour les 9 999 itérations suivantes
+            match_data["winner"] = winner
+            print(f"  ✓ Vainqueur enregistré pour la suite de la simulation : {winner}\n")
+            
+            return winner
 
     return simulate_knockout_match(t1, t2)
 
